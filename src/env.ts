@@ -71,5 +71,5 @@ if (process.env.GOOGLE_API_KEY) {
 
 // Default model
 if (!process.env.RLM_MODEL) {
-	process.env.RLM_MODEL = "claude-sonnet-4-6";
+	process.env.RLM_MODEL = process.env.OPENAI_API_KEY ? "gpt-5.6-sol" : "claude-fable-5";
 }

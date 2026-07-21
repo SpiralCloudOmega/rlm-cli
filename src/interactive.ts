@@ -48,6 +48,7 @@ const { getModels, getProviders } = await import("@mariozechner/pi-ai");
 const { PythonRepl } = await import("./repl.js");
 const { runRlmLoop } = await import("./rlm.js");
 const { loadConfig } = await import("./config.js");
+const { isFrontierModel, resolveApiModel } = await import("./models.js");
 
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { RlmProgress, SubQueryStartInfo, SubQueryInfo } from "./rlm.js";
@@ -85,7 +86,7 @@ const c = {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
+const DEFAULT_MODEL = process.env.RLM_MODEL || "gpt-5.6-sol";
 const RLM_HOME = path.join(os.homedir(), ".rlm");
 const SESSIONS_DIR = path.join(RLM_HOME, "sessions");
 
@@ -164,7 +165,7 @@ function detectProvider(): string {
 }
 
 function hasAnyApiKey(): boolean {
-	return detectProvider() !== "unknown" || ollamaModelMap.size > 0;
+	return detectProvider() !== "unknown" || !!process.env.RLM_API_KEY || ollamaModelMap.size > 0;
 }
 
 /** Returns the pi-ai provider name + model for a given model ID, searching all providers.
@@ -175,42 +176,15 @@ function resolveModelWithProvider(modelId: string): { model: Model<Api>; provide
 	const ollamaKey = modelId.startsWith("ollama:") ? modelId : (ollamaModelMap.has(modelId) ? modelId : null);
 	if (ollamaKey) {
 		const m = ollamaModelMap.get(ollamaKey);
-		if (m) return { model: m as unknown as Model<Api>, provider: "ollama" };
+		if (m && isFrontierModel(m.id)) return { model: m as unknown as Model<Api>, provider: "ollama" };
 	}
-	const knownNames = new Set(SETUP_PROVIDERS.map((p) => p.piProvider));
-	let firstMatch: { model: Model<Api>; provider: string } | undefined;
-
-	// First pass: well-known providers that have an API key set (best match)
-	for (const provider of getProviders()) {
-		if (!knownNames.has(provider)) continue;
-		for (const m of getModels(provider)) {
-			if (m.id === modelId) {
-				if (process.env[providerEnvKey(provider)]) {
-					return { model: m, provider };
-				}
-				if (!firstMatch) firstMatch = { model: m, provider };
-			}
-		}
-	}
-	// Second pass: well-known providers without key (user may enter it later)
-	if (firstMatch) return firstMatch;
-
-	// Third pass: all remaining providers
-	for (const provider of getProviders()) {
-		if (knownNames.has(provider)) continue;
-		for (const m of getModels(provider)) {
-			if (m.id === modelId) return { model: m, provider };
-		}
-	}
-	return undefined;
+	return resolveApiModel(modelId, modelId === config.sub_model ? "sub" : "root");
 }
 
 /** Sensible default model per provider. */
 const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
-	anthropic: "claude-sonnet-4-6",
-	openai: "gpt-4o",
-	google: "gemini-2.5-flash",
-	openrouter: "auto",
+	anthropic: "claude-fable-5",
+	openai: "gpt-5.6-sol",
 };
 
 /** Returns the recommended default model for a provider. */
@@ -514,7 +488,7 @@ const EXCLUDED_MODEL_PATTERNS = [
 ];
 
 function isModelExcluded(modelId: string): boolean {
-	return EXCLUDED_MODEL_PATTERNS.some((p) => p.test(modelId));
+	return !isFrontierModel(modelId) || EXCLUDED_MODEL_PATTERNS.some((p) => p.test(modelId));
 }
 
 /** Collect models from providers that have an API key set. */
@@ -1829,7 +1803,7 @@ async function runQuery(query: string): Promise<void> {
 			context: effectiveContext,
 			query,
 			model: currentModel,
-			subModel: config.sub_model ? resolveModel(config.sub_model) : undefined,
+			subModel: config.sub_model ? resolveApiModel(config.sub_model, "sub")?.model : undefined,
 			repl,
 			signal: ac.signal,
 			onProgress: (info: RlmProgress) => {

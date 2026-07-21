@@ -95,7 +95,12 @@ describe("env loader (dist/env.js)", () => {
 
   it("defaults RLM_MODEL when unset", async () => {
     const env = await runEnvModule({});
-    assert.equal(env.RLM_MODEL, "claude-sonnet-4-6");
+    assert.equal(env.RLM_MODEL, "claude-fable-5");
+  });
+
+  it("defaults to GPT-5.6 Sol when an OpenAI key is configured", async () => {
+    const env = await runEnvModule({ extraEnv: { OPENAI_API_KEY: "test-key" } });
+    assert.equal(env.RLM_MODEL, "gpt-5.6-sol");
   });
 
   it("keeps an explicitly set RLM_MODEL", async () => {

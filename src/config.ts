@@ -15,6 +15,12 @@ export interface RlmConfig {
 	truncate_len: number;
 	metadata_preview_lines: number;
 	sub_model: string;  // model ID for sub-queries (empty = same as root)
+	max_total_tokens: number;
+	max_cost_usd: number;
+	max_concurrency: number;
+	min_request_interval_ms: number;
+	max_retries: number;
+	chunk_size_chars: number;
 }
 
 const DEFAULTS: RlmConfig = {
@@ -24,6 +30,12 @@ const DEFAULTS: RlmConfig = {
 	truncate_len: 5000,
 	metadata_preview_lines: 20,
 	sub_model: "",  // empty = same model as root
+	max_total_tokens: 0,  // 0 = unlimited
+	max_cost_usd: 0,  // 0 = unlimited
+	max_concurrency: 8,
+	min_request_interval_ms: 0,
+	max_retries: 2,
+	chunk_size_chars: 0,  // 0 = derive from the sub-model context window
 };
 
 function parseYaml(text: string): Record<string, unknown> {
@@ -75,6 +87,14 @@ export function loadConfig(): RlmConfig {
 					truncate_len: clamp(parsed.truncate_len, 500, 50000, DEFAULTS.truncate_len),
 					metadata_preview_lines: clamp(parsed.metadata_preview_lines, 5, 100, DEFAULTS.metadata_preview_lines),
 					sub_model: typeof parsed.sub_model === "string" ? parsed.sub_model.trim() : (process.env.RLM_SUB_MODEL ?? ""),
+					max_total_tokens: clamp(parsed.max_total_tokens, 0, 100000000, DEFAULTS.max_total_tokens),
+					max_cost_usd: typeof parsed.max_cost_usd === "number" && isFinite(parsed.max_cost_usd)
+						? Math.max(0, parsed.max_cost_usd)
+						: DEFAULTS.max_cost_usd,
+					max_concurrency: clamp(parsed.max_concurrency, 1, 100, DEFAULTS.max_concurrency),
+					min_request_interval_ms: clamp(parsed.min_request_interval_ms, 0, 60000, DEFAULTS.min_request_interval_ms),
+					max_retries: clamp(parsed.max_retries, 0, 10, DEFAULTS.max_retries),
+					chunk_size_chars: clamp(parsed.chunk_size_chars, 0, 1000000, DEFAULTS.chunk_size_chars),
 				};
 			} catch {
 				// Fall through to defaults

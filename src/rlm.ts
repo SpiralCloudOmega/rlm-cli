@@ -21,16 +21,46 @@ import {
 } from "@mariozechner/pi-ai";
 import type { ExecResult, PythonRepl } from "./repl.js";
 import { loadConfig, type RlmConfig } from "./config.js";
-
-/** Wrapper that injects a placeholder apiKey for local providers that don't need one (e.g. Ollama). */
-function callModel(model: Model<Api>, context: Parameters<typeof completeSimple>[1]) {
-	const apiKey = (model.provider as string) === "ollama" ? "ollama" : undefined;
-	return completeSimple(model, context, apiKey ? { apiKey } : undefined);
-}
+import { getModelApiKey } from "./models.js";
 
 // ── Load config ─────────────────────────────────────────────────────────────
 
 const config = loadConfig();
+
+function isRetryable(message: string): boolean {
+	return /(?:429|500|502|503|504|rate|timeout|temporar|overload|connection|network)/i.test(message);
+}
+
+async function callModel(
+	model: Model<Api>,
+	context: Parameters<typeof completeSimple>[1],
+	signal?: AbortSignal,
+) {
+	const apiKey = getModelApiKey(model) || ((model.provider as string) === "ollama" ? "ollama" : undefined);
+	let lastResponse: Awaited<ReturnType<typeof completeSimple>> | undefined;
+	for (let attempt = 0; attempt <= config.max_retries; attempt++) {
+		try {
+			const response = await completeSimple(model, context, { apiKey, signal });
+			lastResponse = response;
+			if (!response.errorMessage || !isRetryable(response.errorMessage) || attempt === config.max_retries) {
+				return response;
+			}
+		} catch (error) {
+			if (signal?.aborted || attempt === config.max_retries || !isRetryable(error instanceof Error ? error.message : String(error))) {
+				throw error;
+			}
+		}
+		const delay = Math.min(500 * 2 ** attempt, 5000);
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(resolve, delay);
+			signal?.addEventListener("abort", () => {
+				clearTimeout(timer);
+				reject(new Error("Aborted"));
+			}, { once: true });
+		});
+	}
+	return lastResponse!;
+}
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -83,6 +113,7 @@ export interface RlmResult {
 	/** Approximate token counts (root model only; sub-queries not tracked by all providers) */
 	inputTokens?: number;
 	outputTokens?: number;
+	totalCostUsd?: number;
 }
 
 // ── System prompt (aligned with paper Appendix C) ───────────────────────────
@@ -93,6 +124,7 @@ function buildSystemPrompt(opts?: {
 	subQueriesUsed?: number;
 	maxSubQueries?: number;
 	hasSubModel?: boolean;
+	chunkSizeChars?: number;
 }): string {
 	const {
 		iteration = 1,
@@ -100,18 +132,25 @@ function buildSystemPrompt(opts?: {
 		subQueriesUsed = 0,
 		maxSubQueries = config.max_sub_queries,
 		hasSubModel = false,
+		chunkSizeChars = 32000,
 	} = opts ?? {};
 
 	const budgetLine = `You have ${maxIterations - iteration + 1} iteration(s) remaining and ${maxSubQueries - subQueriesUsed} sub-query call(s) remaining out of ${maxSubQueries} total.`;
 	const subModelNote = hasSubModel
 		? "Sub-queries use a smaller, faster model — they are cheap. Use them liberally for chunking and aggregation."
 		: "Sub-queries use the same model as the root — be strategic and avoid excessive calls.";
+	const resourceBudget = [
+		config.max_total_tokens > 0 ? `${config.max_total_tokens.toLocaleString()} total tokens` : "",
+		config.max_cost_usd > 0 ? `$${config.max_cost_usd.toFixed(2)} total cost` : "",
+	].filter(Boolean).join(" and ");
 
 	return `You are a Recursive Language Model (RLM) agent. You process arbitrarily large contexts by writing Python code in a persistent REPL.
 
 ## Budget
 ${budgetLine}
 ${subModelNote}
+${resourceBudget ? `The run also has a hard budget of ${resourceBudget}.` : ""}
+Target chunks of about ${chunkSizeChars.toLocaleString()} characters so sub-queries fit the selected model's context window.
 
 ## Available in the REPL
 
@@ -310,14 +349,60 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 
 	// Use subModel for sub-queries if provided; fall back to root model
 	const subCallModel = subModel ?? model;
+	const autoChunkSize = Math.max(4000, Math.min(100000, Math.floor(subCallModel.contextWindow * 4 * 0.5)));
+	const chunkSizeChars = config.chunk_size_chars || autoChunkSize;
 
 	let totalSubQueries = 0;
 	let iterationSubQueries = 0;
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
+	let totalCostUsd = 0;
+	let activeSubQueries = 0;
+	let nextRequestAt = 0;
+	const concurrencyWaiters: Array<() => void> = [];
+
+	const budgetError = (): string | undefined => {
+		const totalTokens = totalInputTokens + totalOutputTokens;
+		if (config.max_total_tokens > 0 && totalTokens >= config.max_total_tokens) {
+			return `Maximum token budget (${config.max_total_tokens.toLocaleString()}) reached`;
+		}
+		if (config.max_cost_usd > 0 && totalCostUsd >= config.max_cost_usd) {
+			return `Maximum cost budget ($${config.max_cost_usd.toFixed(2)}) reached`;
+		}
+		return undefined;
+	};
+
+	const recordUsage = (response: AssistantMessage) => {
+		totalInputTokens += response.usage?.input ?? 0;
+		totalOutputTokens += response.usage?.output ?? 0;
+		totalCostUsd += response.usage?.cost?.total ?? 0;
+	};
+
+	const acquireSubQuerySlot = async () => {
+		if (activeSubQueries >= config.max_concurrency) {
+			await raceAbort(new Promise<void>((resolve) => concurrencyWaiters.push(resolve)), signal);
+		}
+		activeSubQueries++;
+	};
+
+	const releaseSubQuerySlot = () => {
+		activeSubQueries--;
+		concurrencyWaiters.shift()?.();
+	};
+
+	const applyRateLimit = async () => {
+		const now = Date.now();
+		const startAt = Math.max(now, nextRequestAt);
+		nextRequestAt = startAt + config.min_request_interval_ms;
+		if (startAt > now) {
+			await raceAbort(new Promise<void>((resolve) => setTimeout(resolve, startAt - now)), signal);
+		}
+	};
 
 	const llmQueryHandler = async (subContext: string, instruction: string) => {
 		if (signal?.aborted) throw new Error("Aborted");
+		const exhausted = budgetError();
+		if (exhausted) return `[ERROR] ${exhausted}. Call FINAL() with your best answer now.`;
 		if (totalSubQueries >= config.max_sub_queries) {
 			return `[ERROR] Maximum sub-query limit (${config.max_sub_queries}) reached. Call FINAL() with your best answer now.`;
 		}
@@ -332,8 +417,11 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 			instruction,
 		});
 
-		const response = await raceAbort(
-			callModel(subCallModel, {
+		await acquireSubQuerySlot();
+		try {
+			await applyRateLimit();
+			const response = await raceAbort(
+				callModel(subCallModel, {
 				systemPrompt: `You are a helpful assistant. Answer the user's question based on the provided context. Be concise but thorough. Do not write code — respond in natural language.`,
 				messages: [
 					{
@@ -342,31 +430,28 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 						timestamp: Date.now(),
 					},
 				],
-			}),
-			signal,
-		);
+				}, signal),
+				signal,
+			);
 
-		const textParts = response.content.filter((b): b is TextContent => b.type === "text").map((b) => b.text);
-		const result = textParts.join("\n");
+			const textParts = response.content.filter((b): b is TextContent => b.type === "text").map((b) => b.text);
+			const result = textParts.join("\n");
 
-		// Track tokens if provider returns them
-		if ("inputTokens" in response && typeof response.inputTokens === "number") {
-			totalInputTokens += response.inputTokens;
+			recordUsage(response);
+
+			onSubQuery?.({
+				index: queryIndex,
+				contextLength: subContext.length,
+				instruction,
+				resultLength: result.length,
+				resultPreview: result,
+				elapsedMs: Date.now() - sqStart,
+			});
+
+			return result;
+		} finally {
+			releaseSubQuerySlot();
 		}
-		if ("outputTokens" in response && typeof response.outputTokens === "number") {
-			totalOutputTokens += response.outputTokens;
-		}
-
-		onSubQuery?.({
-			index: queryIndex,
-			contextLength: subContext.length,
-			instruction,
-			resultLength: result.length,
-			resultPreview: result,
-			elapsedMs: Date.now() - sqStart,
-		});
-
-		return result;
 	};
 
 	/** Set up (or re-set up) the REPL with context and handler. */
@@ -389,6 +474,18 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 
 	for (let iteration = 1; iteration <= config.max_iterations; iteration++) {
 		iterationSubQueries = 0;
+		const exhausted = budgetError();
+		if (exhausted) {
+			return {
+				answer: `[Budget exhausted] ${exhausted}`,
+				iterations: iteration - 1,
+				totalSubQueries,
+				completed: false,
+				inputTokens: totalInputTokens || undefined,
+				outputTokens: totalOutputTokens || undefined,
+				totalCostUsd: totalCostUsd || undefined,
+			};
+		}
 		if (signal?.aborted) {
 			return { answer: "[Aborted]", iterations: iteration, totalSubQueries, completed: false };
 		}
@@ -407,7 +504,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 			subQueries: totalSubQueries,
 			phase: "generating_code",
 			userMessage: userMsgText,
-			systemPrompt: iteration === 1 ? buildSystemPrompt({ iteration, maxIterations: config.max_iterations, subQueriesUsed: totalSubQueries, maxSubQueries: config.max_sub_queries, hasSubModel: !!subModel }) : undefined,
+			systemPrompt: iteration === 1 ? buildSystemPrompt({ iteration, maxIterations: config.max_iterations, subQueriesUsed: totalSubQueries, maxSubQueries: config.max_sub_queries, hasSubModel: !!subModel, chunkSizeChars }) : undefined,
 		});
 
 		const systemPrompt = buildSystemPrompt({
@@ -416,6 +513,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 			subQueriesUsed: totalSubQueries,
 			maxSubQueries: config.max_sub_queries,
 			hasSubModel: !!subModel,
+			chunkSizeChars,
 		});
 
 		let response;
@@ -424,7 +522,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 				callModel(model, {
 					systemPrompt,
 					messages: conversationHistory,
-				}),
+				}, signal),
 				signal,
 			);
 		} catch (apiErr) {
@@ -444,13 +542,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 			return { answer: "[Aborted]", iterations: iteration, totalSubQueries, completed: false };
 		}
 
-		// Track root model token usage
-		if ("inputTokens" in response && typeof response.inputTokens === "number") {
-			totalInputTokens += response.inputTokens;
-		}
-		if ("outputTokens" in response && typeof response.outputTokens === "number") {
-			totalOutputTokens += response.outputTokens;
-		}
+		recordUsage(response);
 
 		// Surface API errors — bail immediately on unrecoverable errors
 		if ("errorMessage" in response && response.errorMessage) {
@@ -569,6 +661,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 				completed: true,
 				inputTokens: totalInputTokens || undefined,
 				outputTokens: totalOutputTokens || undefined,
+				totalCostUsd: totalCostUsd || undefined,
 			};
 		}
 
@@ -602,5 +695,6 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		completed: false,
 		inputTokens: totalInputTokens || undefined,
 		outputTokens: totalOutputTokens || undefined,
+		totalCostUsd: totalCostUsd || undefined,
 	};
 }

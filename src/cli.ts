@@ -18,9 +18,10 @@ import "./env.js";
 import * as fs from "node:fs";
 
 // Dynamic imports — ensures env.js has set process.env BEFORE pi-ai loads
-const { getModels, getProviders } = await import("@mariozechner/pi-ai");
 const { PythonRepl } = await import("./repl.js");
 const { runRlmLoop } = await import("./rlm.js");
+const { loadConfig } = await import("./config.js");
+const { resolveApiModel } = await import("./models.js");
 
 import type { Api, Model } from "@mariozechner/pi-ai";
 
@@ -90,7 +91,7 @@ function parseArgs(): CliArgs {
 	}
 
 	if (!modelId) {
-		modelId = process.env.RLM_MODEL || "claude-sonnet-4-6";
+		modelId = process.env.RLM_MODEL || "gpt-5.6-sol";
 	}
 
 	if (positional.length === 0) {
@@ -145,84 +146,18 @@ const ac = new AbortController();
 
 async function main(): Promise<void> {
 	const args = parseArgs();
-
-	// Provider → env var mapping
-	const providerKeys: Record<string, string> = {
-		anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY",
-		google: "GEMINI_API_KEY",
-		openrouter: "OPENROUTER_API_KEY",
-	};
-	const defaultModels: Record<string, string> = {
-		anthropic: "claude-sonnet-4-6", openai: "gpt-4o",
-		google: "gemini-2.5-flash",
-		openrouter: "auto",
-	};
-
-	// Resolve model — ensure provider has an API key
-	// Prioritise well-known providers so e.g. "gpt-4o" picks "openai" not "azure-openai-responses"
-	let model: Model<Api> | undefined;
-	let resolvedProvider = "";
-	const allModelIds: string[] = [];
-	const knownProviders = new Set(Object.keys(providerKeys));
-
-	// First pass: only well-known providers
-	for (const provider of getProviders()) {
-		const providerModels = getModels(provider);
-		for (const m of providerModels) {
-			allModelIds.push(m.id);
-			if (!model && m.id === args.modelId && knownProviders.has(provider)) {
-				const key = providerKeys[provider]!;
-				if (process.env[key]) {
-					model = m;
-					resolvedProvider = provider;
-				}
-			}
-		}
-	}
-	// Second pass: remaining providers (if not found above)
-	if (!model) {
-		for (const provider of getProviders()) {
-			if (knownProviders.has(provider)) continue;
-			for (const m of getModels(provider)) {
-				if (m.id === args.modelId) {
-					const key = `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-					if (process.env[key]) {
-						model = m;
-						resolvedProvider = provider;
-						break;
-					}
-				}
-			}
-			if (model) break;
-		}
-	}
-
-	// Fallback: if default model's provider has no key, pick one that does
-	if (!model) {
-		for (const [prov, envKey] of Object.entries(providerKeys)) {
-			if (!process.env[envKey]) continue;
-			const fallbackId = defaultModels[prov];
-			if (!fallbackId) continue;
-			for (const p of getProviders()) {
-				if (p !== prov) continue;
-				for (const m of getModels(p)) {
-					if (m.id === fallbackId) {
-						model = m;
-						resolvedProvider = prov;
-						args.modelId = fallbackId;
-						console.error(`Note: using ${fallbackId} (${prov}) — set RLM_MODEL to override`);
-						break;
-					}
-				}
-				if (model) break;
-			}
-			if (model) break;
-		}
-	}
+	const config = loadConfig();
+	const resolved = resolveApiModel(args.modelId, "root");
+	const model: Model<Api> | undefined = resolved?.model;
 
 	if (!model) {
-		console.error(`Error: unknown model "${args.modelId}"`);
-		console.error(`Available models: ${allModelIds.join(", ")}`);
+		console.error(`Error: could not resolve frontier model "${args.modelId}"`);
+		console.error("Set its provider API key, or configure RLM_API_KEY and RLM_BASE_URL for an OpenAI-compatible endpoint.");
+		process.exit(1);
+	}
+	const subModel = config.sub_model ? resolveApiModel(config.sub_model, "sub")?.model : undefined;
+	if (config.sub_model && !subModel) {
+		console.error(`Error: could not resolve sub-model "${config.sub_model}". Configure RLM_SUB_API_KEY and RLM_SUB_BASE_URL.`);
 		process.exit(1);
 	}
 
@@ -280,6 +215,7 @@ async function main(): Promise<void> {
 			context,
 			query: args.query,
 			model,
+			subModel,
 			repl,
 			signal: ac.signal,
 			onProgress: args.verbose

@@ -44,6 +44,12 @@ describe("loadConfig", () => {
       truncate_len: 5000,
       metadata_preview_lines: 20,
       sub_model: "",
+      max_total_tokens: 0,
+      max_cost_usd: 0,
+      max_concurrency: 8,
+      min_request_interval_ms: 0,
+      max_retries: 2,
+      chunk_size_chars: 0,
     });
   });
 
@@ -77,12 +83,24 @@ describe("loadConfig", () => {
         "max_sub_queries: 9999",
         "truncate_len: 100",
         "metadata_preview_lines: 1",
+        "max_total_tokens: 12345",
+        "max_cost_usd: 2.5",
+        "max_concurrency: 500",
+        "min_request_interval_ms: 70000",
+        "max_retries: 99",
+        "chunk_size_chars: 2000000",
       ].join("\n"),
     );
     assert.equal(config.max_iterations, 100);
     assert.equal(config.max_sub_queries, 500);
     assert.equal(config.truncate_len, 500);
     assert.equal(config.metadata_preview_lines, 5);
+    assert.equal(config.max_total_tokens, 12345);
+    assert.equal(config.max_cost_usd, 2.5);
+    assert.equal(config.max_concurrency, 100);
+    assert.equal(config.min_request_interval_ms, 60000);
+    assert.equal(config.max_retries, 10);
+    assert.equal(config.chunk_size_chars, 1000000);
   });
 
   it("rounds fractional numbers", () => {
