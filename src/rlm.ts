@@ -144,7 +144,7 @@ function buildSystemPrompt(opts?: {
 ${budgetLine}
 ${subModelNote}
 ${resourceBudget ? `The run also has a hard budget of ${resourceBudget}.` : ""}
-Target chunks of about ${chunkSizeChars.toLocaleString()} characters so sub-queries fit the selected model's context window.
+Target chunks of about ${chunkSizeChars.toLocaleString()} characters so sub-queries fit the selected model's context window (approximately four characters per token).
 
 ## Available in the REPL
 
@@ -343,7 +343,12 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 
 	// Use subModel for sub-queries if provided; fall back to root model
 	const subCallModel = subModel ?? model;
-	const autoChunkSize = Math.max(4000, Math.min(100000, Math.floor(subCallModel.contextWindow * 4 * 0.5)));
+	const APPROX_CHARS_PER_TOKEN = 4;
+	const CONTEXT_FRACTION_FOR_CHUNK = 0.5; // Reserve half for instructions, output, and aggregation overhead.
+	const autoChunkSize = Math.max(
+		4000,
+		Math.min(100000, Math.floor(subCallModel.contextWindow * APPROX_CHARS_PER_TOKEN * CONTEXT_FRACTION_FOR_CHUNK)),
+	);
 	const chunkSizeChars = config.chunk_size_chars || autoChunkSize;
 
 	let totalSubQueries = 0;
