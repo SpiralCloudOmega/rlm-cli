@@ -20,11 +20,20 @@ function nonNegativeNumber(value: string | undefined): number {
 
 export function isFrontierModel(modelId: string): boolean {
 	const gpt = modelId.match(/^gpt-(\d+)(?:\.(\d+))?(?:-|$)/i);
-	if (gpt) return Number(gpt[1]) > 5 || (Number(gpt[1]) === 5 && Number(gpt[2] || 0) >= 6);
+	if (gpt) {
+		const major = Number(gpt[1]);
+		const minor = Number(gpt[2] || 0);
+		return major > 5 || (major === 5 && minor >= 6);
+	}
 	const claude = modelId.match(/^claude-fable-(\d+)(?:-|$)/i);
-	if (claude) return Number(claude[1]) >= 5;
+	if (claude) {
+		const major = Number(claude[1]);
+		return major >= 5;
+	}
 	const kimi = modelId.match(/^kimi-k(\d+)(?:[.-]|$)/i);
-	return !!kimi && Number(kimi[1]) >= 3;
+	if (!kimi) return false;
+	const major = Number(kimi[1]);
+	return major >= 3;
 }
 
 export function createCompatibleModel(modelId: string, role: ModelRole = "root"): Model<Api> | undefined {

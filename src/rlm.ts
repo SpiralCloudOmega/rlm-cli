@@ -133,10 +133,10 @@ function buildSystemPrompt(opts?: {
 	const subModelNote = hasSubModel
 		? "Sub-queries use a smaller, faster model — they are cheap. Use them liberally for chunking and aggregation."
 		: "Sub-queries use the same model as the root — be strategic and avoid excessive calls.";
-	const resourceBudget = [
-		config.max_total_tokens > 0 ? `${config.max_total_tokens.toLocaleString()} total tokens` : "",
-		config.max_cost_usd > 0 ? `$${config.max_cost_usd.toFixed(2)} total cost` : "",
-	].filter(Boolean).join(" and ");
+	const resourceBudgetParts: string[] = [];
+	if (config.max_total_tokens > 0) resourceBudgetParts.push(`${config.max_total_tokens.toLocaleString()} total tokens`);
+	if (config.max_cost_usd > 0) resourceBudgetParts.push(`$${config.max_cost_usd.toFixed(2)} total cost`);
+	const resourceBudget = resourceBudgetParts.join(" and ");
 
 	return `You are a Recursive Language Model (RLM) agent. You process arbitrarily large contexts by writing Python code in a persistent REPL.
 
@@ -392,6 +392,8 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 	const applyRateLimit = async () => {
 		const now = Date.now();
 		const startAt = Math.max(now, nextRequestAt);
+		// Reserve this request's slot synchronously before awaiting so concurrent
+		// callers reserve later, non-overlapping slots.
 		nextRequestAt = startAt + config.min_request_interval_ms;
 		if (startAt > now) {
 			await raceAbort(new Promise<void>((resolve) => setTimeout(resolve, startAt - now)), signal);
