@@ -13,12 +13,14 @@
 
 import "../src/env.js";
 import { execSync } from "node:child_process";
-import { completeSimple, getModels, getProviders } from "@mariozechner/pi-ai";
+import { completeSimple } from "@mariozechner/pi-ai";
 import { PythonRepl } from "../src/repl.js";
 import { runRlmLoop } from "../src/rlm.js";
+import { loadConfig } from "../src/config.js";
+import { getModelApiKey, resolveApiModel } from "../src/models.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Api, Model, TextContent } from "@mariozechner/pi-ai";
+import type { TextContent } from "@mariozechner/pi-ai";
 import type { RlmProgress, SubQueryStartInfo, SubQueryInfo } from "../src/rlm.js";
 
 // Resolve paths from package root (not CWD)
@@ -248,17 +250,14 @@ console.log(`  ${c.dim}Expected: ${JSON.stringify(example.answers)}${c.reset}\n`
 
 // ── Resolve model ──────────────────────────────────────────────────────────
 
-const modelId = process.env.RLM_MODEL || "claude-sonnet-4-6";
-let model: Model<Api> | undefined;
-for (const provider of getProviders()) {
-	for (const m of getModels(provider)) {
-		if (m.id === modelId) model = m;
-	}
-}
+const modelId = process.env.RLM_MODEL || "gpt-5.6-sol";
+const model = resolveApiModel(modelId, "root")?.model;
 if (!model) {
-	console.error(`${c.red}Model "${modelId}" not found.${c.reset}`);
+	console.error(`${c.red}Frontier model "${modelId}" could not be resolved.${c.reset}`);
 	process.exit(1);
 }
+const config = loadConfig();
+const subModel = config.sub_model ? resolveApiModel(config.sub_model, "sub")?.model : undefined;
 
 console.log(`  ${c.dim}Model: ${modelId}${c.reset}\n`);
 
@@ -290,7 +289,7 @@ const directResponse = await completeSimple(model, {
 			timestamp: Date.now(),
 		},
 	],
-});
+}, { apiKey: getModelApiKey(model), signal: ac.signal });
 directSpinner.stop();
 
 const directTime = ((Date.now() - t1) / 1000).toFixed(1);
@@ -322,6 +321,7 @@ try {
 		context: fullContext,
 		query: example.input,
 		model,
+		subModel,
 		repl,
 		signal: ac.signal,
 		onProgress: (info: RlmProgress) => {

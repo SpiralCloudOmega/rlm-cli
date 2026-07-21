@@ -20,7 +20,7 @@ rlm                                          # interactive — first run sets up
 rlm run --file big.log "which errors repeat most, and when?"
 ```
 
-Works with Anthropic, OpenAI, Google, OpenRouter, or local **Ollama** models. The model-generated Python runs in an OS-level sandbox by default ([details](#security)).
+Uses current frontier families only: GPT 5.6+, Claude Fable 5+, and Kimi K3+. Registered models use their native provider; newly released models can use configurable OpenAI- or Anthropic-compatible endpoints.
 
 ## Security
 
@@ -35,8 +35,7 @@ rlm runs Python that the **LLM writes**, and a prompt-injected context document 
 ## What's New in v0.6.0
 
 - **Sandboxed execution** — model-generated Python runs in an OS-level sandbox by default (no network, no access to `~/.rlm`), so prompt-injected code can't exfiltrate your keys — see [Security](#security)
-- **Ollama support** — use any locally-installed model (llama3, mistral, qwen, etc.) with zero API key setup
-- **Mixed-model mode** — `sub_model` in config lets you use a cheap/fast model for sub-queries and a powerful model for the root loop (mirrors the paper's GPT-5 + GPT-5-mini setup)
+- **Mixed-model mode** — `sub_model` lets Kimi K3 or another frontier model analyze chunks while the strongest model plans and synthesizes
 - **Paper-aligned system prompt** — per-iteration budget awareness, sub-query strategy guidance, parallel async patterns from arXiv:2512.24601
 - **Session-based trajectories** — runs grouped into `~/.rlm/sessions/<session-id>/` instead of a flat directory
 - **Refreshed terminal UI** — Electric Amber RGB palette, two-column welcome panel with version in border, silent operation (no noise between queries)
@@ -56,27 +55,40 @@ Run `rlm` to start. First launch will prompt for a provider + API key (saved to 
 
 ---
 
-## Supported Providers
+## Frontier Models
 
-| Provider | Env Variable | Default Model |
-|----------|-------------|---------------|
-| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
-| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` |
-| **Google** | `GEMINI_API_KEY` | `gemini-2.5-flash` |
-| **OpenRouter** | `OPENROUTER_API_KEY` | `auto` |
-| **Ollama** | _(no key needed)_ | any installed model |
+Older model families are intentionally excluded from model selection. The accepted floors are GPT 5.6, Claude Fable 5, and Kimi K3; later versions of those families are accepted automatically.
 
-### Ollama (local models)
+### GPT-5.6 Sol
 
-If [Ollama](https://ollama.ai) is running, rlm-cli auto-detects it at startup — no config needed.
-
-```bash
-ollama pull llama3.1:8b
-rlm
-# → /model llama3.1:8b   or   /provider → choose Ollama
+```dotenv
+RLM_MODEL=gpt-5.6-sol
+OPENAI_API_KEY=...
 ```
 
-Set a custom daemon URL with `OLLAMA_BASE_URL=http://...`.
+### Claude Fable 5
+
+```dotenv
+RLM_MODEL=claude-fable-5
+ANTHROPIC_API_KEY=...
+```
+
+### GPT-5.6 Sol root with Kimi K3 sub-queries
+
+This keeps planning and final synthesis on Sol while Kimi processes selected chunks:
+
+```dotenv
+RLM_MODEL=gpt-5.6-sol
+OPENAI_API_KEY=...
+RLM_SUB_MODEL=kimi-k3
+RLM_SUB_API_KEY=...
+RLM_SUB_BASE_URL=https://api.moonshot.ai/v1
+RLM_SUB_CONTEXT_WINDOW=262144
+```
+
+Set `sub_model: kimi-k3` in `rlm_config.yaml`. If your Kimi host uses a different model ID or URL, use the exact values supplied by that host.
+
+Unregistered root models use `RLM_API_KEY`, `RLM_BASE_URL`, and optional `RLM_API` (`openai-completions` or `anthropic-messages`). Sub-model overrides use the corresponding `RLM_SUB_*` variables. Never put real keys in `rlm_config.yaml` or commit them.
 
 Keys are loaded from (highest priority wins):
 1. Shell environment variables
@@ -132,7 +144,7 @@ rlm run "Explain recursive language models"
 rlm run --file large-file.txt "List all classes and their methods"
 rlm run --url https://example.com/data.txt "Summarize this"
 cat data.txt | rlm run --stdin "Count the errors"
-rlm run --model gpt-4o --file code.py "Find bugs"
+rlm run --model gpt-5.6-sol --file code.py "Find bugs"
 ```
 
 Answer goes to stdout, progress to stderr — pipe-friendly.
@@ -190,14 +202,16 @@ max_depth: 1             # Fixed at 1 in the current runtime
 max_sub_queries: 50      # Max total sub-queries (1-500)
 truncate_len: 5000       # Truncate REPL output beyond this (500-50000)
 metadata_preview_lines: 20
-
-# Use a cheaper/faster model for sub-queries (paper: GPT-5-mini for sub-calls)
-# sub_model: gpt-4o-mini
-# sub_model: claude-haiku-3-5
-# sub_model: llama3.1:8b        # Ollama model for free sub-queries!
+sub_model: kimi-k3       # Optional frontier model for chunk analysis
+max_total_tokens: 0      # Hard run budget; 0 disables
+max_cost_usd: 0          # Hard run budget; 0 disables
+max_concurrency: 8       # Concurrent sub-queries
+min_request_interval_ms: 0
+max_retries: 2
+chunk_size_chars: 0      # 0 derives from the sub-model context window
 ```
 
-The `sub_model` option is the key cost-saving trick from the paper — a fast cheap model handles the chunking work while the root model synthesizes the final answer.
+For custom endpoints, set `RLM_INPUT_COST_PER_M`/`RLM_OUTPUT_COST_PER_M` (or `RLM_SUB_*`) so cost budgets use the host's current pricing. Token budgets work from provider-reported usage.
 
 ---
 

@@ -168,8 +168,7 @@ function hasAnyApiKey(): boolean {
 	return detectProvider() !== "unknown" || !!process.env.RLM_API_KEY || ollamaModelMap.size > 0;
 }
 
-/** Returns the pi-ai provider name + model for a given model ID, searching all providers.
- *  Prioritises SETUP_PROVIDERS (with API key) so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses".
+/** Returns the provider and model for a frontier model ID.
  *  Checks local Ollama models first for `ollama:` prefix or bare Ollama model names. */
 function resolveModelWithProvider(modelId: string): { model: Model<Api>; provider: string } | undefined {
 	// Ollama: explicit prefix "ollama:<name>" or bare Ollama model name (e.g. "llama3.1:8b")
@@ -464,31 +463,8 @@ function formatSize(chars: number): string {
 
 // ── Available models list ────────────────────────────────────────────────────
 
-/** Filter out deprecated, retired, and non-chat models (Feb 2026). */
-const EXCLUDED_MODEL_PATTERNS = [
-	// ── Anthropic retired / old gen ──
-	/^claude-3-/,                // all claude 3.x retired (haiku, sonnet, opus, 3-5-*, 3-7-*)
-	// ── OpenAI legacy / specialized ──
-	/^gpt-4$/,                   // superseded by gpt-4.1
-	/^gpt-4-turbo/,              // superseded by gpt-4.1
-	/^gpt-4o-2024-/,             // dated snapshots
-	/-chat-latest$/,             // chat variants (use base model)
-	/^codex-/,                   // code-only
-	/-codex/,                    // all codex variants
-	// ── Google retired / deprecated ──
-	/^gemini-1\.5-/,             // all 1.5 retired
-	/^gemini-3-pro-preview$/,    // deprecated, shuts down Mar 9, 2026
-	/^gemini-live-/,             // real-time streaming, not standard chat
-	// ── Dated snapshots / previews ──
-	/preview-\d{2}-\d{2}$/,      // e.g. preview-04-17
-	/preview-\d{2}-\d{4}$/,      // e.g. preview-09-2025
-	/^labs-/,
-	/-customtools$/,
-	/deep-research$/,
-];
-
 function isModelExcluded(modelId: string): boolean {
-	return !isFrontierModel(modelId) || EXCLUDED_MODEL_PATTERNS.some((p) => p.test(modelId));
+	return !isFrontierModel(modelId);
 }
 
 /** Collect models from providers that have an API key set. */

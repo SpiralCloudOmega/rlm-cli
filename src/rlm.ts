@@ -51,13 +51,7 @@ async function callModel(
 			}
 		}
 		const delay = Math.min(500 * 2 ** attempt, 5000);
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(resolve, delay);
-			signal?.addEventListener("abort", () => {
-				clearTimeout(timer);
-				reject(new Error("Aborted"));
-			}, { once: true });
-		});
+		await raceAbort(new Promise<void>((resolve) => setTimeout(resolve, delay)), signal);
 	}
 	return lastResponse!;
 }
@@ -110,7 +104,7 @@ export interface RlmResult {
 	iterations: number;
 	totalSubQueries: number;
 	completed: boolean;
-	/** Approximate token counts (root model only; sub-queries not tracked by all providers) */
+	/** Provider-reported usage across root and sub-model calls. */
 	inputTokens?: number;
 	outputTokens?: number;
 	totalCostUsd?: number;

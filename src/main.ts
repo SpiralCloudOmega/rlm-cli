@@ -48,17 +48,18 @@ ${sec("Run options")}
   ${cmd("--verbose")}      Show iteration progress
 
 ${sec("Configuration")}
-  ${dim(".env file")} — pick one provider:
-    ANTHROPIC_API_KEY=sk-ant-…
-    OPENAI_API_KEY=sk-…
-    GEMINI_API_KEY=AIza…
-    OPENROUTER_API_KEY=sk-or-…
+${dim(".env file")} — frontier models only:
+  RLM_MODEL=gpt-5.6-sol
+  OPENAI_API_KEY=…
+  RLM_SUB_MODEL=kimi-k3
+  RLM_SUB_API_KEY=…
+  RLM_SUB_BASE_URL=https://api.moonshot.ai/v1
 
-  ${dim("rlm_config.yaml:")}
-    max_iterations: 20
-    max_depth: 1
+${dim("rlm_config.yaml:")}
+  max_iterations: 20
     max_sub_queries: 50
-    truncate_len: 5000
+  max_total_tokens: 0
+  max_cost_usd: 0
 `.trim();
 }
 

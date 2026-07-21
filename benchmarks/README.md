@@ -36,3 +36,5 @@ Each benchmark:
 3. Runs it through the RLM loop
 4. Compares the result against the expected answer
 5. Saves trajectory for inspection
+
+The same frontier-model environment variables used by the CLI apply here. For example, set `RLM_MODEL=gpt-5.6-sol`, or pair it with `RLM_SUB_MODEL=kimi-k3` and the Kimi `RLM_SUB_API_KEY`/`RLM_SUB_BASE_URL`. Each script runs the same example directly and through RLM so quality, latency, token usage, and configured budgets can be compared.

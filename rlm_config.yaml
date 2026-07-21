@@ -16,10 +16,19 @@ truncate_len: 5000
 # Preview lines shown in context metadata
 metadata_preview_lines: 20
 
-# Optional cheaper/faster model for sub-queries (paper uses GPT-5-mini for sub-calls, GPT-5 for root)
-# This is a key cost-saving strategy from arXiv:2512.24601.
+# Optional frontier sub-model for chunk analysis.
 # Leave commented out to use the root model for all calls.
 # Examples:
-#   sub_model: gpt-4o-mini       # cheap, fast — good for chunked summarization
-#   sub_model: claude-haiku-3-5  # fastest Anthropic model
-# sub_model: gpt-4o-mini
+#   sub_model: kimi-k3
+#   sub_model: claude-fable-5
+# sub_model: kimi-k3
+
+# Production resource controls (0 means unlimited where noted)
+max_total_tokens: 0
+max_cost_usd: 0
+max_concurrency: 8
+min_request_interval_ms: 0
+max_retries: 2
+
+# Target sub-query chunk size. 0 derives a safe size from the sub-model context window.
+chunk_size_chars: 0
